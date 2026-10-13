@@ -1,5 +1,5 @@
 import { silentLogger } from "../../../src/logger.js";
-import { copyFile } from "node:fs/promises";
+import { copyFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect } from "vitest";
@@ -9,6 +9,11 @@ import { createBinarySession } from "../../../src/composition/binary.js";
 import { parseConfig } from "../../../src/config/parseConfig.js";
 import { inspectMachoSchema } from "../../../src/domain/native/nativeInspection.js";
 import { createServer } from "../../../src/server/createServer.js";
+import { thinMach } from "../../../src/domain/binaryTarget.fixture.js";
+import { createTestBinarySession } from "../../fixtures/binarySession.js";
+import { observed } from "../../fixtures/analysisExecution.js";
+import { ok } from "../../../src/domain/result.js";
+import { parseMcpToolError } from "../../fixtures/mcpToolError.js";
 import { createTestTempDirectory } from "../../fixtures/temporaryDirectory.js";
 import { mcpTest } from "../../support/mcp/mcpFixture.js";
 
@@ -144,5 +149,46 @@ describe.skipIf(process.platform !== "darwin")(
         );
       },
     );
+  },
+);
+
+mcpTest(
+  "refuses summary delivery before analysis when the server retains no Evidence",
+  async ({ mcp, onTestFinished }) => {
+    const target = join(
+      await createTestTempDirectory("rea-summary-preflight-"),
+      "tool",
+    );
+    await writeFile(target, thinMach(0xfeedfacf, 0x0100000c));
+    const executed: string[] = [];
+    const session = createTestBinarySession(() => ({
+      execute: (operation) => {
+        executed.push(operation);
+        return Promise.resolve(observed(null));
+      },
+      close: () => Promise.resolve(ok(null)),
+    }));
+    onTestFinished(async () => {
+      await session.close();
+    });
+    const opened = await session.open(target);
+    if (!opened.ok) throw opened.error;
+    const client = await mcp.connect(
+      createServer({ kind: "fixed", analysis: session }),
+    );
+    const refused = [];
+    for (const name of ["inspect_macho", "inspect_artifact"])
+      refused.push(
+        await client.callTool({ name, arguments: { detail: "summary" } }),
+      );
+    // Neither analysis ran only to be discarded by the delivery refusal.
+    expect(executed.filter((operation) => operation !== "health")).toEqual([]);
+    for (const result of refused)
+      expect(parseMcpToolError(result)).toMatchObject({
+        error: {
+          code: "capability_unavailable",
+          message: expect.stringContaining("does not retain Evidence"),
+        },
+      });
   },
 );

@@ -3,7 +3,10 @@ import type { EvidenceWriter } from "../application/investigation/InvestigationR
 
 import { NATIVE_TOOL_CONTRACTS } from "../contracts/native/nativeToolContracts.js";
 import type { EvidenceLookup } from "../application/EvidenceInputResolver.js";
-import { summarizeRetainedAnalysis } from "../application/analysisView/AnalysisViewService.js";
+import {
+  requireAnalysisViewRetention,
+  summarizeRetainedAnalysis,
+} from "../application/analysisView/AnalysisViewService.js";
 import type { JsonValue } from "../domain/jsonValue.js";
 import { ok } from "../domain/result.js";
 import type { BinaryTarget } from "../domain/binaryTargetTypes.js";
@@ -31,16 +34,21 @@ export const registerNativeTools = (
     readonly withAdmittedAnalysis: import("./analysisAdmission.js").WithAdmittedAnalysis;
   },
 ): void => {
+  const retention = {
+    recordEvidence: options.recordEvidence,
+    evidenceById: options.evidenceById,
+  };
   registerEvidenceTools(server, NATIVE_TOOL_CONTRACTS, {
     ...options,
     parametersForExecution: withoutDelivery,
     parametersForEvidence: withoutDelivery,
+    preflight: (operation, parameters) =>
+      operation === "inspect_macho" && parameters.detail === "summary"
+        ? requireAnalysisViewRetention(operation, retention)
+        : ok(null),
     projectEvidence: (operation, parameters, evidence) =>
       operation === "inspect_macho" && parameters.detail === "summary"
-        ? summarizeRetainedAnalysis(evidence, {
-            recordEvidence: options.recordEvidence,
-            evidenceById: options.evidenceById,
-          })
+        ? summarizeRetainedAnalysis(evidence, retention)
         : ok(evidence),
   });
 };
